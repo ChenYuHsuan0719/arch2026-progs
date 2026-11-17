@@ -218,7 +218,6 @@ rubik_solve_asm:
     li      t0, 11              # the diameter
     bgtu    a3, t0, .Lida_return_UINT8_MAX     # cannot happen for a valid state
 
-    li      a7, 255             # min = UINT8_MAX
     li      a6, 0               # d = 0
     li      t0, 3               # NO_FACE: the start has no previous face
     sb      t0, 32(sp)          # last_face[0]
@@ -276,16 +275,20 @@ rubik_solve_asm:
     lhu     t2, 0(t1)           # t2 = ori_move[face][co[d]]
     sh      t2, 160(t4)         # co[d] = t2
 
-    # f = g + h with g = d + 1. A child with f above the bound cannot be
-    # solved within this round, so it is cut, and the smallest such f
-    # becomes the next bound.
-    HEUR    t1, t6, t2, a4, a5
+    # f = d + 1 + max(pdb_p, pdb_o) <= bound exactly when each bound alone
+    # fits, so test them one at a time and prune at the first that does
+    # not: most children are cut by the permutation alone, and pdb_o is
+    # never read for them.
+    add     t1, s0, t6
+    lbu     t1, 0(t1)           # pdb_p[new p]
     add     t1, t1, a6
-    addi    t1, t1, 1           # f = d + 1 + h
-    bleu    t1, a3, .Lida_accept    # f <= bound: go deeper
-    bgeu    t1, a7, .Lida_for_loop  # f >= min: nothing to record
-    mv      a7, t1              # min = f
-    j       .Lida_for_loop
+    addi    t1, t1, 1           # f by the permutation bound alone
+    bgtu    t1, a3, .Lida_for_loop
+    add     t1, s1, t2
+    lbu     t1, 0(t1)           # pdb_o[new o]
+    add     t1, t1, a6
+    addi    t1, t1, 1           # f by the orientation bound alone
+    bgtu    t1, a3, .Lida_for_loop
 
 .Lida_accept:
     sb      t0, 16(t5)          # path[d] = move
@@ -301,7 +304,7 @@ rubik_solve_asm:
 .Lida_next_round:
     # The bound grows to the smallest f cut, so no shorter solution is
     # skipped and the first solution found is a shortest one.
-    mv      a3, a7
+    addi    a3, a3, 1
     j       .Lida_while_loop
 
 .Lida_found:
