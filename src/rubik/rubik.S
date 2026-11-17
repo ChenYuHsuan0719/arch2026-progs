@@ -11,7 +11,7 @@
 # 0 to 728), run IDA* with the larger of two pattern databases as the
 # heuristic, then write the moves.
 #
-# Stack frame, 192 bytes, 16-byte aligned:
+# Stack frame, 224 bytes, 16-byte aligned:
 #   sp +   0  s.p[0..6]       the parsed permutation, one byte per cubie
 #   sp +   7  s.o[0..6]       the parsed orientations
 #   sp +  16  path[0..10]     the move made at each depth
@@ -21,6 +21,7 @@
 #   sp +  96  so_[d]          halfword: the orientation at depth d
 #   sp + 128  cp[d]           halfword: the permutation of the child tried
 #   sp + 160  co[d]           halfword: the orientation of the child tried
+#   sp + 192  s0 to s5        saved on entry, restored on every return
 #
 # Registers:
 #   a0      state on entry; the result on return
@@ -32,6 +33,9 @@
 #   a7      min, the smallest f cut in this round
 #   t0-t6   scratch; in the search t0 = move, t3 = face, t4 = sp + 2d,
 #           t5 = sp + d, t6 and t2 = the child's p and o
+#   s0, s1  pdb_p and pdb_o
+#   s2, s3  the tables of perm_move[face] and ori_move[face]
+#   s4, s5  move_face and move_turn
 #
 # No calls: the function is a leaf, keeps no saved register and needs no
 # return address on the stack.
@@ -42,11 +46,9 @@
 # heuristic. Each pattern database is a lower bound on the distance, so their
 # maximum is one too. temp_a and temp_b are scratch registers.
     .macro HEUR dist, p, o, temp_a, temp_b
-        la      \temp_a, rubik_tab_pdb_p
-        add     \temp_a, \temp_a, \p
+        add     \temp_a, s0, \p         # s0 = pdb_p
         lbu     \dist, 0(\temp_a)
-        la      \temp_a, rubik_tab_pdb_o
-        add     \temp_a, \temp_a, \o
+        add     \temp_a, s1, \o         # s1 = pdb_o
         lbu     \temp_b, 0(\temp_a)
         bgeu    \dist, \temp_b, 1f       # keep the larger lower bound
         mv      \dist, \temp_b
@@ -74,7 +76,13 @@
     .type   rubik_solve_asm, @function
     .align  2
 rubik_solve_asm:
-    addi    sp, sp, -192        # stack frame, 16-byte aligned
+    addi    sp, sp, -224        # 192 for the arrays, 32 for s0 to s5
+    sw      s0, 192(sp)         # callee-saved: restore before returning
+    sw      s1, 196(sp)
+    sw      s2, 200(sp)
+    sw      s3, 204(sp)
+    sw      s4, 208(sp)
+    sw      s5, 212(sp)
 
     # Step 1: parse. s.p[0..6] at sp + 0, s.o[0..6] at sp + 7. A digit minus
     # '1' is compared unsigned with the count of allowed values, so one
@@ -190,6 +198,15 @@ rubik_solve_asm:
     # frame replaces the recursion: byte arrays at sp + d, halfword arrays at
     # sp + 2d. Going down a level writes slot d + 1 and increments d; going
     # back up decrements d.
+    # The table addresses never change during the search, so they are
+    # loaded once here instead of at every child.
+    la      s0, rubik_tab_pdb_p
+    la      s1, rubik_tab_pdb_o
+    la      s2, .Lperm_tab
+    la      s3, .Lori_tab
+    la      s4, .Lmove_face
+    la      s5, .Lmove_turn
+
     or      t0, a4, a5
     li      a0, 0               # length 0 when already solved
     beqz    t0, .Lsolved
@@ -219,8 +236,7 @@ rubik_solve_asm:
 .Lno_finish_of_9_move:
     addi    t1, t0, 1
     sb      t1, 48(t5)          # next[d] = move + 1
-    la      t1, .Lmove_face
-    add     t1, t1, t0
+    add     t1, s4, t0
     lbu     t3, 0(t1)           # t3 = face
     lbu     t1, 32(t5)          # last_face[d]
     bne     t3, t1, .Lida_turn
@@ -234,8 +250,7 @@ rubik_solve_asm:
 .Lida_turn:
     slli    t4, a6, 1
     add     t4, sp, t4          # t4 = sp + 2d, for the halfword arrays
-    la      t1, .Lmove_turn
-    add     t1, t1, t0
+    add     t1, s5, t0
     lbu     t1, 0(t1)
     bnez    t1, .Lida_apply     # X2 and X' turn the previous child again
     lhu     t1, 64(t4)
@@ -246,16 +261,14 @@ rubik_solve_asm:
 .Lida_apply:
     # One quarter turn on each index, by table lookup.
     slli    t2, t3, 2           # face * 4, an index into a word table
-    la      t1, .Lperm_tab
-    add     t1, t1, t2
+    add     t1, s2, t2
     lw      t1, 0(t1)           # perm_move[face]
     lhu     t6, 128(t4)
     slli    t6, t6, 1           # a halfword table: index * 2
     add     t1, t1, t6
     lhu     t6, 0(t1)           # t6 = perm_move[face][cp[d]]
     sh      t6, 128(t4)         # cp[d] = t6
-    la      t1, .Lori_tab
-    add     t1, t1, t2
+    add     t1, s3, t2
     lw      t1, 0(t1)           # ori_move[face]
     lhu     t2, 160(t4)
     slli    t2, t2, 1
@@ -361,6 +374,12 @@ rubik_solve_asm:
 .Linvalid_state:
     li      a0, -1
 .Lrubik_ret:
-    addi    sp, sp, 192         # restore the stack on every path
+    lw      s0, 192(sp)         # restore the callee-saved registers
+    lw      s1, 196(sp)
+    lw      s2, 200(sp)
+    lw      s3, 204(sp)
+    lw      s4, 208(sp)
+    lw      s5, 212(sp)
+    addi    sp, sp, 224         # restore the stack on every path
     ret
     .size   rubik_solve_asm, .-rubik_solve_asm
