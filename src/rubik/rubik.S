@@ -28,9 +28,9 @@
 #   a1      out, advanced while the moves are written
 #   a2      cap
 #   a3      parse cursor; then the IDA* bound
-#   a4, a5  p and o of the start; later scratch inside HEUR
+#   a4      the start p; in the search, the constant 9
 #   a6      d, the current depth
-#   a7      min, the smallest f cut in this round
+#   a7      L = bound - d - 1, the moves left below the current level
 #   t0-t6   scratch; in the search t0 = move, t3 = face, t4 = sp + 2d,
 #           t5 = sp + d, t6 and t2 = the child's p and o
 #   s0, s1  pdb_p and pdb_o
@@ -219,6 +219,8 @@ rubik_solve_asm:
     bgtu    a3, t0, .Lida_return_UINT8_MAX     # cannot happen for a valid state
 
     li      a6, 0               # d = 0
+    addi    a7, a3, -1          # L = bound - d - 1, the moves left after this one
+    li      a4, 9               # the move count, kept for the loop test
     li      t0, 3               # NO_FACE: the start has no previous face
     sb      t0, 32(sp)          # last_face[0]
     sb      x0, 48(sp)          # next[0] = 0
@@ -226,10 +228,10 @@ rubik_solve_asm:
 .Lida_for_loop:
     add     t5, sp, a6          # t5 = sp + d, for the byte arrays
     lbu     t0, 48(t5)          # t0 = next[d]
-    li      t2, 9
-    bne     t0, t2, .Lno_finish_of_9_move
+    bne     t0, a4, .Lno_finish_of_9_move
     beqz    a6, .Lida_next_round    # all nine moves tried at depth 0
     addi    a6, a6, -1          # back to the parent
+    addi    a7, a7, 1           # one more move left there
     j       .Lida_for_loop
 
 .Lno_finish_of_9_move:
@@ -275,20 +277,14 @@ rubik_solve_asm:
     lhu     t2, 0(t1)           # t2 = ori_move[face][co[d]]
     sh      t2, 160(t4)         # co[d] = t2
 
-    # f = d + 1 + max(pdb_p, pdb_o) <= bound exactly when each bound alone
-    # fits, so test them one at a time and prune at the first that does
-    # not: most children are cut by the permutation alone, and pdb_o is
-    # never read for them.
+    # d + 1 + h > bound is h > L, with L = bound - d - 1 kept in a7. L is -1
+    # at the deepest level, so the compare is signed: every child there is cut.
     add     t1, s0, t6
     lbu     t1, 0(t1)           # pdb_p[new p]
-    add     t1, t1, a6
-    addi    t1, t1, 1           # f by the permutation bound alone
-    bgtu    t1, a3, .Lida_for_loop
+    bgt     t1, a7, .Lida_for_loop
     add     t1, s1, t2
     lbu     t1, 0(t1)           # pdb_o[new o]
-    add     t1, t1, a6
-    addi    t1, t1, 1           # f by the orientation bound alone
-    bgtu    t1, a3, .Lida_for_loop
+    bgt     t1, a7, .Lida_for_loop
 
 .Lida_accept:
     sb      t0, 16(t5)          # path[d] = move
@@ -299,6 +295,7 @@ rubik_solve_asm:
     sb      t3, 33(t5)          # last_face[d + 1] = face
     sb      zero, 49(t5)        # next[d + 1] = 0
     addi    a6, a6, 1           # d++
+    addi    a7, a7, -1          # one move fewer left below
     j       .Lida_for_loop
 
 .Lida_next_round:
